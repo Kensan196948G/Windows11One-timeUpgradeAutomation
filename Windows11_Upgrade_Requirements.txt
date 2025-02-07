@@ -1,0 +1,95 @@
+# Windows 11 アップグレード - PowerShell スクリプトによるリモート展開 要件
+
+## 1. 概要
+本要件定義は、本社・支店における Windows 10 から Windows 11 への
+PowerShell スクリプトを使用したリモートアップグレードを実施するための要件をまとめたものです。
+
+## 2. 必須要件
+### (1) 管理PC（スクリプト実行元）
+- Windows 10 / 11 が稼働している管理PC
+- `WinRM`（Windows Remote Management）が有効化されていること
+- `PsExec` を利用する場合は `PsTools` がインストールされていること
+- `C:\PC_List.txt` に対象PCのホスト名またはIPアドレスがリスト化されていること
+- Windows 11 のISOファイル (`Windows11.iso`) をローカルに格納していること
+
+### (2) 接続先PC（アップグレード対象PC）
+- Windows 10 Pro / Enterprise（バージョン 21H2 以上）
+- Windows 11 のシステム要件を満たしていること
+- `WinRM` が有効（もしくは `PsExec` によるリモート実行が可能）
+- ファイアウォール設定で TCP 5985（WinRM用）が許可されていること
+- Active Directory の管理者アカウントでリモート実行が可能であること
+- `BitLocker` が無効、もしくは適切に一時停止されていること
+
+## 3. 実装要件
+### (1) リモートPCリストの作成
+対象のPCを `C:\PC_List.txt` に保存（1行1台のフォーマット）
+```
+PC001
+PC002
+192.168.1.10
+192.168.1.11
+```
+
+### (2) Windows 11 ISO のマウント
+```powershell
+$ISOPath = "C:\Windows11.iso"
+$DriveLetter = (Mount-DiskImage -ImagePath $ISOPath -PassThru | Get-Volume).DriveLetter
+```
+
+### (3) PowerShell リモートスクリプト
+```powershell
+$Computers = Get-Content "C:\PC_List.txt"
+$User = "DOMAIN\IT_Admin"
+$Password = ConvertTo-SecureString "YourPassword" -AsPlainText -Force
+$Credential = New-Object System.Management.Automation.PSCredential($User, $Password)
+
+foreach ($Computer in $Computers) {
+    Invoke-Command -ComputerName $Computer -Credential $Credential -ScriptBlock {
+        param ($DriveLetter)
+        Start-Process -FilePath "$($DriveLetter):\setup.exe" -ArgumentList "/auto upgrade /quiet /noreboot" -Wait
+    } -ArgumentList $DriveLetter
+}
+```
+
+### (4) PsExec を使用する場合
+```cmd
+psexec @C:\PC_List.txt -u DOMAIN\IT_Admin -p YourPassword "C:\Windows11Upgrade\setup.exe /auto upgrade /quiet /noreboot"
+```
+
+### (5) WinRM の有効化
+```powershell
+Enable-PSRemoting -Force
+New-NetFirewallRule -Name "AllowWinRM" -DisplayName "Allow WinRM" -Enabled True -Direction Inbound -Protocol TCP -LocalPort 5985 -Action Allow
+```
+
+### (6) アップグレード後の確認
+```powershell
+Invoke-Command -ComputerName $Computer -Credential $Credential -ScriptBlock {
+    Get-ComputerInfo | Select-Object WindowsVersion, OsArchitecture
+}
+```
+
+## 4. 実行手順
+1. 管理PCに Windows 11 のISOを保存
+2. `C:\PC_List.txt` に対象PCをリスト化
+3. ISO をマウント
+4. WinRM を有効化（必要な場合）
+5. アップグレードスクリプトを実行
+6. アップグレード完了後にバージョン確認
+
+## 5. 想定される課題と対応策
+| 課題 | 対応策 |
+|---|---|
+| WinRM が無効 | `PsExec` を使用する |
+| 管理者アカウントで認証が必要 | `SecureString` を使用して AD 認証情報を渡す |
+| BitLocker が有効なPC | `manage-bde -disable C:` で一時停止 |
+| ネットワーク帯域の影響 | 時間帯を分散し、トラフィック負荷を軽減 |
+
+## 6. まとめ
+| 項目 | 内容 |
+|---|---|
+| 対象PC | 本社・支店の Windows 10 Pro / Enterprise |
+| リモート実行方法 | PowerShell (`Invoke-Command`)、または `PsExec` |
+| 事前要件 | `WinRM` 有効化、管理者権限のADアカウント |
+| アップグレード手順 | ISOをマウント → スクリプト実行 |
+| 確認方法 | Windows バージョン取得 (`Get-ComputerInfo`) |
